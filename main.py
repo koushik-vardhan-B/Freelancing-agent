@@ -1,25 +1,17 @@
-# =============================================================================
-# WINDOWS EVENT LOOP FIX - MUST BE AT THE VERY TOP
-# =============================================================================
-import asyncio
-import sys
-
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-# =============================================================================
-# Now safe to import everything else
-# =============================================================================
-
 """
 LinkedIn Freelance Gigs Scraper - Main Entry Point
 
-Uses LangGraph workflow: scrape → filter → save
+Simple workflow: scrape -> filter -> save to Excel
+
+Usage:
+    python main.py                                    # Defaults
+    python main.py --keywords "python developer"     # Custom keywords
+    python main.py --no-filter                       # Skip AI
 """
 
 import argparse
+import sys
 from pathlib import Path
-from datetime import datetime
 
 from loguru import logger
 
@@ -33,38 +25,34 @@ logger.add(
 
 
 def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Scrape freelance gigs from LinkedIn using LangGraph workflow"
-    )
+    parser = argparse.ArgumentParser(description="Scrape LinkedIn freelance gigs")
     
     parser.add_argument(
         "--keywords", "-k",
         type=str,
-        nargs="+",
-        default=["freelance developer"],
-        help="Search keywords (can specify multiple)"
+        default="freelance developer",
+        help="Search keywords"
     )
     
     parser.add_argument(
         "--pages", "-p",
         type=int,
         default=2,
-        help="Number of pages to scrape per keyword (default: 2)"
+        help="Pages to scrape (25 jobs each)"
     )
     
     parser.add_argument(
         "--output", "-o",
         type=str,
         default="output/freelance_gigs.xlsx",
-        help="Output Excel file path"
+        help="Output Excel file"
     )
     
     parser.add_argument(
         "--min-score",
         type=int,
         default=5,
-        help="Minimum AI quality score (1-10, default: 5)"
+        help="Min AI quality score (1-10)"
     )
     
     parser.add_argument(
@@ -73,67 +61,77 @@ def parse_args():
         help="Skip AI filtering"
     )
     
+    parser.add_argument(
+        "--visible",
+        action="store_true",
+        help="Show browser window"
+    )
+    
     return parser.parse_args()
 
 
-async def main():
-    """Main function - runs the LangGraph workflow."""
+def main():
     args = parse_args()
     
-    # Import here to avoid loading heavy modules when showing help
-    from src.workflow import run_workflow
+    # Imports
+    from src.linkedin_scraper import scrape_linkedin_jobs
+    from src.ai_filter import filter_jobs_with_ai, FilteredJob
+    from src.excel_writer import write_to_excel
+    from src.config import config
     
-    # Ensure output directory exists
+    # Ensure output dir exists
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     
     # Header
-    print("\n" + "=" * 60)
-    print("🔍 LinkedIn Freelance Gigs Scraper (LangGraph)")
-    print("=" * 60)
-    print(f"Keywords: {', '.join(args.keywords)}")
-    print(f"Pages per keyword: {args.pages}")
-    print(f"Min AI Score: {args.min_score if not args.no_filter else 'Disabled'}")
+    print("\n" + "=" * 50)
+    print("LinkedIn Freelance Gigs Scraper")
+    print("=" * 50)
+    print(f"Keywords: {args.keywords}")
+    print(f"Pages: {args.pages}")
+    print(f"AI Filter: {'Disabled' if args.no_filter else f'Min score {args.min_score}'}")
     print(f"Output: {args.output}")
-    print("=" * 60 + "\n")
+    print("=" * 50 + "\n")
     
-    # Run workflow
-    min_score = 0 if args.no_filter else args.min_score
-    
-    final_state = await run_workflow(
+    # Step 1: Scrape
+    logger.info("Starting LinkedIn scraper...")
+    jobs = scrape_linkedin_jobs(
         keywords=args.keywords,
         max_pages=args.pages,
-        min_score=min_score,
-        excel_path=args.output
+        headless=not args.visible
     )
     
-    # Results
-    print("\n" + "=" * 60)
-    print("📊 WORKFLOW COMPLETE")
-    print("=" * 60)
+    if not jobs:
+        logger.error("No jobs found!")
+        return
     
-    # Messages
-    if final_state.get("messages"):
-        print("\nProgress:")
-        for msg in final_state["messages"]:
-            print(f"  ✓ {msg}")
+    logger.info(f"Scraped {len(jobs)} jobs")
     
-    # Errors
-    if final_state.get("errors"):
-        print("\n⚠️ Errors:")
-        for err in final_state["errors"]:
-            print(f"  ✗ {err}")
+    # Step 2: Filter (optional)
+    if args.no_filter:
+        # Convert to FilteredJob format for Excel
+        filtered = [FilteredJob(job=j, quality_score=0, reason="Not analyzed") for j in jobs]
+    else:
+        try:
+            config.validate()
+            filtered = filter_jobs_with_ai(jobs, min_score=args.min_score)
+        except ValueError as e:
+            logger.warning(f"AI filter skipped: {e}")
+            filtered = [FilteredJob(job=j, quality_score=0, reason="No API key") for j in jobs]
     
-    # Final output
-    print(f"\n{final_state.get('final_output', 'No output')}")
+    logger.info(f"After filter: {len(filtered)} jobs")
     
-    # Stats
-    print(f"\nStats:")
-    print(f"  Total scraped: {len(final_state.get('all_gigs', []))} gigs")
-    print(f"  After filter: {len(final_state.get('filtered_gigs', []))} gigs")
-    print(f"  Steps executed: {final_state.get('step_count', 0)}")
+    # Step 3: Save to Excel
+    output_path = write_to_excel(filtered, args.output)
     
-    print("=" * 60 + "\n")
+    # Summary
+    print("\n" + "=" * 50)
+    print("DONE!")
+    print("=" * 50)
+    print(f"Scraped: {len(jobs)} jobs")
+    print(f"Filtered: {len(filtered)} jobs")
+    print(f"Saved to: {output_path}")
+    print("=" * 50 + "\n")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

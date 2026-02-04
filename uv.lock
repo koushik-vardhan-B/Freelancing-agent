@@ -176,23 +176,27 @@ source = { virtual = "." }
 dependencies = [
     { name = "groq" },
     { name = "jsonpatch" },
+    { name = "jsonpointer" },
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "loguru" },
     { name = "openpyxl" },
     { name = "playwright" },
+    { name = "pydantic-core" },
     { name = "python-dotenv" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "groq", specifier = ">=0.37.1" },
-    { name = "jsonpatch", specifier = ">=1.33" },
-    { name = "langchain-core", specifier = ">=0.3.83" },
-    { name = "langgraph", specifier = ">=0.2.35" },
+    { name = "groq", specifier = ">=0.4.0" },
+    { name = "jsonpatch", specifier = ">=1.32" },
+    { name = "jsonpointer", specifier = ">=3.0.0" },
+    { name = "langchain-core", specifier = ">=0.1.0" },
+    { name = "langgraph", specifier = ">=0.0.10" },
     { name = "loguru", specifier = ">=0.7.2" },
-    { name = "openpyxl", specifier = ">=3.1.5" },
+    { name = "openpyxl", specifier = ">=3.1.2" },
     { name = "playwright", specifier = ">=1.40.0" },
+    { name = "pydantic-core", specifier = ">=2.41.5" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
 

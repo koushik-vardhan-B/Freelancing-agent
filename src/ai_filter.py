@@ -1,8 +1,7 @@
 """
-AI Filter - Uses Groq SDK directly to filter and score jobs
+AI Filter - Uses Groq SDK to filter and score jobs
 
 Analyzes job listings and identifies the best freelance opportunities.
-Uses the groq SDK directly (no langchain dependency issues).
 """
 
 import json
@@ -16,30 +15,18 @@ from src.config import config
 from src.linkedin_scraper import JobListing
 
 
-SYSTEM_PROMPT = """You are an expert freelance job analyst. Analyze job listings and determine if they are good freelance/contract opportunities.
+SYSTEM_PROMPT = """You are a freelance job analyst. Analyze job listings and score them.
 
-For each job, evaluate:
-1. Is it truly a freelance/contract role (not full-time)?
-2. Does it seem legitimate (not a scam)?
-3. Quality of the opportunity
+For each job, provide:
+- quality_score (1-10): How good is this opportunity?
+- reason: Brief explanation
 
-Respond in JSON format:
+Respond in JSON:
 {
     "jobs": [
-        {
-            "index": 0,
-            "is_freelance": true,
-            "is_legitimate": true,
-            "quality_score": 8,
-            "reason": "Clear project scope, reputable company"
-        }
+        {"index": 0, "quality_score": 8, "reason": "Good pay, clear scope"}
     ]
 }
-
-Quality score is 1-10:
-- 1-3: Poor (vague, low pay, red flags)
-- 4-6: Average  
-- 7-10: Excellent (clear scope, good pay)
 
 Only include jobs scoring 5 or higher."""
 
@@ -50,12 +37,10 @@ class FilteredJob:
     job: JobListing
     quality_score: int
     reason: str
-    is_freelance: bool
-    is_legitimate: bool
 
 
 class AIFilter:
-    """Uses Groq API directly to filter jobs."""
+    """Uses Groq API to filter jobs."""
     
     def __init__(self):
         config.validate()
@@ -63,16 +48,7 @@ class AIFilter:
         self.model = config.GROQ_MODEL
     
     def filter_jobs(self, jobs: List[JobListing], min_score: int = 5) -> List[FilteredJob]:
-        """
-        Filter jobs using AI.
-        
-        Args:
-            jobs: List of scraped jobs
-            min_score: Minimum quality score (1-10)
-            
-        Returns:
-            List of FilteredJob objects that passed the filter
-        """
+        """Filter jobs using AI."""
         if not jobs:
             return []
         
@@ -80,27 +56,24 @@ class AIFilter:
         
         # Process in batches
         batch_size = 10
-        filtered_jobs = []
+        filtered = []
         
         for i in range(0, len(jobs), batch_size):
             batch = jobs[i:i + batch_size]
-            batch_results = self._filter_batch(batch, i, min_score)
-            filtered_jobs.extend(batch_results)
+            results = self._filter_batch(batch, i, min_score)
+            filtered.extend(results)
         
-        logger.info(f"AI filter kept {len(filtered_jobs)} jobs (score >= {min_score})")
-        return filtered_jobs
+        logger.info(f"AI kept {len(filtered)} jobs (score >= {min_score})")
+        return filtered
     
-    def _filter_batch(self, jobs: List[JobListing], start_index: int, min_score: int) -> List[FilteredJob]:
+    def _filter_batch(self, jobs: List[JobListing], start_idx: int, min_score: int) -> List[FilteredJob]:
         """Filter a batch of jobs."""
+        jobs_text = "\n".join([
+            f"Job {start_idx + i}: {j.title} at {j.company} ({j.location})"
+            for i, j in enumerate(jobs)
+        ])
         
-        jobs_text = self._format_jobs(jobs, start_index)
-        
-        prompt = f"""Analyze these job listings:
-
-{jobs_text}
-
-Only include jobs with quality score >= {min_score}.
-Respond ONLY with valid JSON, no other text."""
+        prompt = f"Analyze these jobs:\n\n{jobs_text}\n\nOnly include jobs with score >= {min_score}."
         
         try:
             response = self.client.chat.completions.create(
@@ -110,90 +83,49 @@ Respond ONLY with valid JSON, no other text."""
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=2048,
+                max_tokens=1024,
             )
             
-            content = response.choices[0].message.content
-            return self._parse_response(content, jobs, start_index, min_score)
+            return self._parse_response(response.choices[0].message.content, jobs, start_idx, min_score)
             
         except Exception as e:
             logger.error(f"AI filter error: {e}")
             # On error, return all jobs with default score
-            return [
-                FilteredJob(
-                    job=job,
-                    quality_score=5,
-                    reason="Could not analyze - included by default",
-                    is_freelance=True,
-                    is_legitimate=True
-                )
-                for job in jobs
-            ]
+            return [FilteredJob(job=j, quality_score=5, reason="Default") for j in jobs]
     
-    def _format_jobs(self, jobs: List[JobListing], start_index: int) -> str:
-        """Format jobs for the prompt."""
-        lines = []
-        for i, job in enumerate(jobs):
-            idx = start_index + i
-            desc = job.description[:300] if job.description else 'N/A'
-            lines.append(f"""
-Job {idx}:
-- Title: {job.title}
-- Company: {job.company}
-- Location: {job.location}
-- Type: {job.job_type}
-- Posted: {job.posted_date}
-- Description: {desc}
-""")
-        return "\n".join(lines)
-    
-    def _parse_response(self, response: str, jobs: List[JobListing], start_index: int, min_score: int) -> List[FilteredJob]:
+    def _parse_response(self, response: str, jobs: List[JobListing], start_idx: int, min_score: int) -> List[FilteredJob]:
         """Parse LLM response."""
         filtered = []
         
         try:
             # Clean response
             response = response.strip()
-            if response.startswith("```"):
+            if "```" in response:
                 response = response.split("```")[1]
                 if response.startswith("json"):
                     response = response[4:]
-            if response.endswith("```"):
-                response = response[:-3]
             
             data = json.loads(response)
-            job_results = data.get("jobs", [])
             
-            for result in job_results:
-                idx = result.get("index", 0)
-                local_idx = idx - start_index
+            for result in data.get("jobs", []):
+                idx = result.get("index", 0) - start_idx
                 score = result.get("quality_score", 5)
                 
-                if 0 <= local_idx < len(jobs) and score >= min_score:
+                if 0 <= idx < len(jobs) and score >= min_score:
                     filtered.append(FilteredJob(
-                        job=jobs[local_idx],
+                        job=jobs[idx],
                         quality_score=score,
-                        reason=result.get("reason", ""),
-                        is_freelance=result.get("is_freelance", True),
-                        is_legitimate=result.get("is_legitimate", True)
+                        reason=result.get("reason", "")
                     ))
                     
-        except json.JSONDecodeError as e:
-            logger.warning(f"Could not parse AI response: {e}")
-            # Return all jobs with default scores
-            for job in jobs:
-                filtered.append(FilteredJob(
-                    job=job,
-                    quality_score=5,
-                    reason="Parse error - included by default",
-                    is_freelance=True,
-                    is_legitimate=True
-                ))
+        except json.JSONDecodeError:
+            logger.warning("Could not parse AI response")
+            return [FilteredJob(job=j, quality_score=5, reason="Parse error") for j in jobs]
         
         return filtered
 
 
 def filter_jobs_with_ai(jobs: List[JobListing], min_score: int = 5) -> List[FilteredJob]:
-    """Convenience function to filter jobs."""
-    ai_filter = AIFilter()
-    return ai_filter.filter_jobs(jobs, min_score)
+    """Convenience function."""
+    ai = AIFilter()
+    return ai.filter_jobs(jobs, min_score)

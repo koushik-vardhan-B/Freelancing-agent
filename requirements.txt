@@ -3,10 +3,7 @@
 # Browser automation
 playwright>=1.40.0
 
-# LangGraph workflow
-langgraph>=0.0.10
-
-# Groq SDK (for AI filtering)
+# AI (Groq)
 groq>=0.4.0
 
 # Excel output
